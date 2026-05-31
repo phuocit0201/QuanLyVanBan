@@ -1,0 +1,756 @@
+---
+alwaysApply: true
+---
+
+### # Architecture Overview
+
+This architecture is designed based on the principles of **Clean Architecture** and **Domain-Driven Design (DDD)**. The core philosophy is to build a sustainable, maintainable, and scalable system by placing the **business logic (Domain)** at the core, completely independent of technical details like the framework, database, or user interface.
+
+Below is the high-level directory structure, which illustrates the clear separation of concerns between layers.
+
+```
+app/
+├── Console/
+│   └── Commands/             // Entry points for command-line (CLI) tasks
+├── Core/                     // Base classes and interfaces shared across the application
+├── Domain/                   // THE CORE LAYER: The business logic of the application
+│   ├── Entities/             // Business entities containing logic and state
+│   ├── Events/               // Events that have occurred in the business domain
+│   ├── Enums/                // Defines states as type-safe data structures
+│   └── ValueObjects/         // Immutable value objects describing attributes
+├── Exceptions/               // Custom exceptions for business logic
+├── Http/                     // PRESENTATION LAYER: Entry points via the HTTP protocol
+│   ├── Controllers/          // Orchestrates requests, calls services, returns responses
+│   ├── Middleware/           // Filters and processes HTTP requests
+│   ├── Requests/             // Validates input data and handles authorization
+│   └── Resources/            // Formats and transforms output data for the API
+├── Infrastructure/           // IMPLEMENTATION LAYER: Technical details and tools
+│   ├── ExternalServices/     // Integrates with third-party APIs
+│   ├── Models/               // Database mapping layer, defines schema & relationships
+│   ├── Notifications/        // Defines multi-channel notifications (email, db, slack)
+│   └── Repositories/         // Concrete implementations of Repository Interfaces
+├── Jobs/                     // Asynchronous tasks to be processed in the background (queued)
+├── Listeners/                // Handles logic when an Event is dispatched
+├── Providers/                // Registers and binds dependencies
+├── Repositories/             // DOMAIN LAYER: Defines data access contracts (interfaces)
+└── Services/                 // APPLICATION LAYER: Orchestrates business workflows (use cases)
+```
+
+---
+
+### # Architecture Details
+
+#### The Domain Layer: The Heart of the Application
+This is the core layer, containing all business intelligence and rules. This layer does not depend on any other layer.
+
+*   **`app/Domain/Entities/`**
+    *   **Role:** Represents core business concepts that have an identity and a lifecycle (e.g., `User`, `Order`, `Product`). This is where methods that enforce business rules reside (e.g., `Order::cancel()`). In this architecture, they extend `Models` from the Infrastructure layer to leverage Eloquent's capabilities.
+    *   **Example:**
+    ```php
+    // app/Domain/Entities/Task.php
+    namespace App\Domain\Entities;
+
+    use App\Infrastructure\Models\Task as TaskModel;
+
+    class Task extends TaskModel
+    {
+        public function markAsComplete(): void
+        {
+            if ($this->status === TaskStatus::COMPLETED) {
+                throw new \App\Exceptions\TaskAlreadyCompletedException();
+            }
+            $this->status = TaskStatus::COMPLETED;
+            $this->completed_at = now();
+            $this->save();
+
+            event(new \App\Domain\Events\TaskCompleted($this));
+        }
+    }
+    ```
+
+*   **`app/Domain/ValueObjects/`**
+    *   **Role:** Describes attributes of an Entity as objects without a unique identity (e.g., `Money`, `Address`). They are defined by their values, are typically immutable, and help encapsulate small validation logic.
+    *   **Example:**
+    ```php
+    // app/Domain/ValueObjects/Money.php
+    readonly class Money
+    {
+        public function __construct(
+            private int $amount,
+            private string $currency = 'VND',
+        ) {
+            if ($amount < 0) {
+                throw new \InvalidArgumentException('Amount cannot be negative');
+            }
+        }
+
+        public function add(Money $other): Money
+        {
+            $this->assertSameCurrency($other);
+            return new Money($this->amount + $other->amount, $this->currency);
+        }
+
+        public function getAmount(): int
+        {
+            return $this->amount;
+        }
+    }
+    ```
+
+*   **`app/Domain/Events/`**
+    *   **Role:** Objects that record a significant event that has occurred in the business domain (e.g., `OrderPlaced`). They simply represent a fact that happened and contain no processing logic, which helps in decoupling different parts of the system.
+    *   **Example:**
+    ```php
+    // app/Domain/Events/TaskCompleted.php
+    namespace App\Domain\Events;
+
+    use App\Domain\Entities\Task;
+    use Illuminate\Foundation\Events\Dispatchable;
+    use Illuminate\Queue\SerializesModels;
+
+    class TaskCompleted
+    {
+        use Dispatchable, SerializesModels;
+
+        public function __construct(
+            public Task $task,
+        ) {}
+    }
+    ```
+
+*   **`app/Domain/Enums/`**
+    *   **Role:** Provides a type-safe way to define a finite set of states (e.g., `OrderStatus::PENDING`). This makes the code more readable and eliminates errors from "magic strings".
+    *   **Example:**
+    ```php
+    // app/Domain/Enums/TaskStatus.php
+    namespace App\Domain\Enums;
+
+    enum TaskStatus: string
+    {
+        case PENDING = 'pending';
+        case IN_PROGRESS = 'in_progress';
+        case COMPLETED = 'completed';
+
+        public function label(): string
+        {
+            return match ($this) {
+                self::PENDING => 'Chờ xử lý',
+                self::IN_PROGRESS => 'Đang thực hiện',
+                self::COMPLETED => 'Hoàn thành',
+            };
+        }
+    }
+    ```
+
+*   **`app/Repositories/`**
+    *   **Role:** Conceptually, this directory belongs to the Domain Layer. It contains the **interfaces** (contracts) that define the methods required for data persistence and retrieval. The Application Layer will depend on these interfaces, not on their concrete implementations.
+    *   **Example:**
+    ```php
+    // app/Repositories/TaskRepositoryInterface.php
+    namespace App\Repositories;
+
+    use App\Domain\Entities\Task;
+    use App\Domain\Enums\TaskStatus;
+
+    interface TaskRepositoryInterface
+    {
+        public function findById(int $id): ?Task;
+        public function findByUser(int $userId): array;
+        public function findByStatus(TaskStatus $status): array;
+        public function save(Task $task): Task;
+        public function delete(int $id): bool;
+    }
+    ```
+
+#### The Application Layer: The Orchestrator
+This layer contains the logic that orchestrates business workflows (use cases), acting as a bridge between the Presentation Layer and the Domain Layer.
+
+*   **`app/Services/`**
+    *   **Role:** Each method in a Service represents a specific use case (e.g., `UserService::createUser()`). A Service is responsible for orchestration: it receives input (usually as a DTO), uses Repositories to fetch Entities, commands the Entities to execute their behavior, and uses Repositories to persist the result.
+    *   **Example:**
+    ```php
+    // app/Services/TaskService.php
+    namespace App\Services;
+
+    use App\DTOs\CreateTaskDTO;
+    use App\Domain\Entities\Task;
+    use App\Repositories\TaskRepositoryInterface;
+
+    class TaskService
+    {
+        public function __construct(
+            private readonly TaskRepositoryInterface $taskRepository,
+        ) {}
+
+        public function createTask(CreateTaskDTO $dto): Task
+        {
+            $task = new Task([
+                'title' => $dto->title,
+                'description' => $dto->description,
+                'user_id' => $dto->userId,
+            ]);
+
+            return $this->taskRepository->save($task);
+        }
+
+        public function completeTask(int $taskId): Task
+        {
+            $task = $this->taskRepository->findById($taskId);
+
+            if ($task === null) {
+                throw new \App\Exceptions\TaskNotFoundException($taskId);
+            }
+
+            $task->markAsComplete();
+
+            return $this->taskRepository->save($task);
+        }
+    }
+    ```
+
+*   **`app/Listeners/`**
+    *   **Role:** Listens for `Domain Events` and executes corresponding actions. Listeners orchestrate side effects after a primary business logic has completed, such as sending an email or updating inventory after an order is placed.
+    *   **Example:**
+    ```php
+    // app/Listeners/SendTaskCompletedNotification.php
+    namespace App\Listeners;
+
+    use App\Domain\Events\TaskCompleted;
+    use App\Services\NotificationService;
+
+    class SendTaskCompletedNotification
+    {
+        public function __construct(
+            private readonly NotificationService $notificationService,
+        ) {}
+
+        public function handle(TaskCompleted $event): void
+        {
+            $this->notificationService->send(
+                userId: $event->task->user_id,
+                message: "Task '{$event->task->title}' has been completed!",
+            );
+        }
+    }
+    ```
+
+*   **`app/Jobs/`**
+    *   **Role:** Represents tasks that need to be executed asynchronously in a queue to avoid blocking the application's response time. A Job typically contains a use case and should be kept "thin" by calling into `Services`.
+    *   **Example:**
+    ```php
+    // app/Jobs/SendTaskReminderJob.php
+    namespace App\Jobs;
+
+    use App\Services\NotificationService;
+    use Illuminate\Bus\Queueable;
+    use Illuminate\Contracts\Queue\ShouldQueue;
+    use Illuminate\Foundation\Bus\Dispatchable;
+
+    class SendTaskReminderJob implements ShouldQueue
+    {
+        use Dispatchable, Queueable;
+
+        public function __construct(
+            public int $userId,
+            public int $taskId,
+        ) {}
+
+        public function handle(NotificationService $notificationService): void
+        {
+            $notificationService->sendTaskReminder($this->userId, $this->taskId);
+        }
+    }
+    ```
+
+#### The Infrastructure Layer: Technical Implementation Details
+This layer is where all the things that can change reside: tools, libraries, frameworks, and interactions with the outside world.
+
+*   **`app/Infrastructure/Models/`**
+    *   **Role:** These are base Eloquent Model classes responsible for **database mapping**. They define the schema, Eloquent relationships, and attribute casting. They do not contain any business logic.
+    *   **Example:**
+    ```php
+    // app/Infrastructure/Models/Task.php
+    namespace App\Infrastructure\Models;
+
+    use Illuminate\Database\Eloquent\Model;
+    use Illuminate\Database\Eloquent\Relations\BelongsTo;
+
+    class Task extends Model
+    {
+        protected $fillable = [
+            'title',
+            'description',
+            'status',
+            'user_id',
+            'due_date',
+            'completed_at',
+        ];
+
+        protected function casts(): array
+        {
+            return [
+                'due_date' => 'date',
+                'completed_at' => 'datetime',
+            ];
+        }
+
+        public function user(): BelongsTo
+        {
+            return $this->belongsTo(User::class);
+        }
+    }
+    ```
+
+*   **`app/Infrastructure/Repositories/`**
+    *   **Role:** Contains the concrete implementations for the interfaces defined in `app/Repositories/`. For example, `EloquentTaskRepository` will implement `TaskRepositoryInterface` and use Eloquent Models to perform database queries.
+    *   **Example:**
+    ```php
+    // app/Infrastructure/Repositories/EloquentTaskRepository.php
+    namespace App\Infrastructure\Repositories;
+
+    use App\Domain\Entities\Task;
+    use App\Domain\Enums\TaskStatus;
+    use App\Infrastructure\Models\Task as TaskModel;
+    use App\Repositories\TaskRepositoryInterface;
+
+    class EloquentTaskRepository implements TaskRepositoryInterface
+    {
+        public function findById(int $id): ?Task
+        {
+            $model = TaskModel::find($id);
+            return $model ? new Task($model->toArray()) : null;
+        }
+
+        public function findByUser(int $userId): array
+        {
+            return TaskModel::where('user_id', $userId)
+                ->orderBy('created_at', 'desc')
+                ->get()
+                ->map(fn($m) => new Task($m->toArray()))
+                ->all();
+        }
+
+        public function findByStatus(TaskStatus $status): array
+        {
+            return TaskModel::where('status', $status->value)
+                ->get()
+                ->map(fn($m) => new Task($m->toArray()))
+                ->all();
+        }
+
+        public function save(Task $task): Task
+        {
+            $model = TaskModel::find($task->id) ?? new TaskModel();
+            $model->fill($task->toArray());
+            $model->save();
+            return new Task($model->toArray());
+        }
+
+        public function delete(int $id): bool
+        {
+            return TaskModel::destroy($id) > 0;
+        }
+    }
+    ```
+
+*   **`app/Infrastructure/Notifications/`**
+    *   **Role:** Defines notifications that will be sent through various channels (email, database, Slack, etc.). They separate the notification's "content" from the "delivery" mechanism.
+    *   **Example:**
+    ```php
+    // app/Infrastructure/Notifications/TaskCompletedNotification.php
+    namespace App\Infrastructure\Notifications;
+
+    use Illuminate\Bus\Queueable;
+    use Illuminate\Contracts\Queue\ShouldQueue;
+    use Illuminate\Notifications\Messages\MailMessage;
+    use Illuminate\Notifications\Notification;
+
+    class TaskCompletedNotification extends Notification implements ShouldQueue
+    {
+        use Queueable;
+
+        public function __construct(
+            public string $taskTitle,
+        ) {}
+
+        public function via(object $notifiable): array
+        {
+            return ['mail', 'database'];
+        }
+
+        public function toMail(object $notifiable): MailMessage
+        {
+            return (new MailMessage)
+                ->subject('Task Completed')
+                ->line("Your task '{$this->taskTitle}' has been marked as completed.");
+        }
+
+        public function toArray(object $notifiable): array
+        {
+            return [
+                'task_title' => $this->taskTitle,
+                'message' => "Task '{$this->taskTitle}' has been completed.",
+            ];
+        }
+    }
+    ```
+
+*   **`app/Infrastructure/ExternalServices/`**
+    *   **Role:** Contains the code for communicating with third-party APIs, such as payment gateways or mapping services.
+    *   **Example:**
+    ```php
+    // app/Infrastructure/ExternalServices/GoogleCalendarService.php
+    namespace App\Infrastructure\ExternalServices;
+
+    use Illuminate\Support\Facades\Http;
+
+    class GoogleCalendarService
+    {
+        public function __construct(
+            private readonly string $apiKey,
+        ) {}
+
+        public function createEvent(array $eventData): array
+        {
+            $response = Http::post("https://calendar.googleapis.com/calendar/v3/calendars/primary/events?key={$this->apiKey}", $eventData);
+
+            return $response->json();
+        }
+    }
+    ```
+
+#### The Presentation Layer: The Entry Points
+This is the outermost layer, serving as the entry point for all interactions from users or other systems.
+
+*   **`app/Http/`**
+    *   **Role:** Handles requests over the HTTP protocol.
+    *   **`Controllers`**: Kept very "thin". Their only job is to receive a request, delegate to the Application Layer, and return a formatted response.
+    *   **Example:**
+    ```php
+    // app/Http/Controllers/Api/TaskController.php
+    namespace App\Http\Controllers\Api;
+
+    use App\Http\Controllers\Controller;
+    use App\Http\Requests\CreateTaskRequest;
+    use App\Http\Resources\TaskResource;
+    use App\Services\TaskService;
+    use Illuminate\Http\JsonResponse;
+    use Illuminate\Http\Request;
+
+    class TaskController extends Controller
+    {
+        public function __construct(
+            private readonly TaskService $taskService,
+        ) {}
+
+        public function index(Request $request): JsonResponse
+        {
+            $tasks = $this->taskService->getUserTasks($request->user()->id);
+            return TaskResource::collection($tasks);
+        }
+
+        public function store(CreateTaskRequest $request): JsonResponse
+        {
+            $task = $this->taskService->createTask($request->toDTO());
+            return (new TaskResource($task))
+                ->response()
+                ->setStatusCode(201);
+        }
+
+        public function complete(int $id): JsonResponse
+        {
+            $task = $this->taskService->completeTask($id);
+            return (new TaskResource($task));
+        }
+    }
+    ```
+    *   **`Requests`**: Responsible for validating incoming data and handling authorization rules.
+    *   **Example:**
+    ```php
+    // app/Http/Requests/CreateTaskRequest.php
+    namespace App\Http\Requests;
+
+    use App\DTOs\CreateTaskDTO;
+    use Illuminate\Foundation\Http\FormRequest;
+
+    class CreateTaskRequest extends FormRequest
+    {
+        public function authorize(): bool
+        {
+            return true;
+        }
+
+        public function rules(): array
+        {
+            return [
+                'title' => 'required|string|max:255',
+                'description' => 'nullable|string|max:1000',
+                'due_date' => 'nullable|date|after:now',
+            ];
+        }
+
+        public function toDTO(): CreateTaskDTO
+        {
+            return new CreateTaskDTO(
+                title: $this->validated('title'),
+                description: $this->validated('description'),
+                userId: $this->user()->id,
+                dueDate: $this->validated('due_date'),
+            );
+        }
+    }
+    ```
+    *   **`Resources`**: Responsible for transforming `Entities` or data into the desired JSON format for the API.
+    *   **Example:**
+    ```php
+    // app/Http/Resources/TaskResource.php
+    namespace App\Http\Resources;
+
+    use Illuminate\Http\Request;
+    use Illuminate\Http\Resources\Json\JsonResource;
+
+    class TaskResource extends JsonResource
+    {
+        public function toArray(Request $request): array
+        {
+            return [
+                'id' => $this->id,
+                'title' => $this->title,
+                'description' => $this->description,
+                'status' => $this->status,
+                'status_label' => $this->status->label(),
+                'due_date' => $this->due_date?->toIso8601String(),
+                'completed_at' => $this->completed_at?->toIso8601String(),
+                'created_at' => $this->created_at->toIso8601String(),
+                'updated_at' => $this->updated_at->toIso8601String(),
+                'user' => new UserResource($this->whenLoaded('user')),
+            ];
+        }
+    }
+    ```
+
+*   **`app/Console/Commands/`**
+    *   **Role:** Another entry point, for tasks triggered from the command line. A Command should act like a Controller, meaning it should be kept thin and delegate its work to the Application Layer.
+    *   **Example:**
+    ```php
+    // app/Console/Commands/SendTaskRemindersCommand.php
+    namespace App\Console\Commands;
+
+    use App\Services\TaskReminderService;
+    use Illuminate\Console\Command;
+
+    class SendTaskRemindersCommand extends Command
+    {
+        protected $signature = 'tasks:send-reminders';
+        protected $description = 'Send reminders for tasks due today';
+
+        public function handle(TaskReminderService $reminderService): int
+        {
+            $count = $reminderService->sendDueTaskReminders();
+            $this->info("Sent {$count} reminders.");
+            return Command::SUCCESS;
+        }
+    }
+    ```
+
+#### Supporting Directories
+
+*   **`app/Providers/`**: The "glue" of the Laravel application. The `RepositoryServiceProvider` is a crucial part of this architecture, as it binds an interface (e.g., `UserRepositoryInterface`) to a concrete implementation (e.g., `EloquentUserRepository`).
+    *   **Example:**
+    ```php
+    // app/Providers/RepositoryServiceProvider.php
+    namespace App\Providers;
+
+    use App\Infrastructure\Repositories\EloquentTaskRepository;
+    use App\Repositories\TaskRepositoryInterface;
+    use Illuminate\Support\ServiceProvider;
+
+    class RepositoryServiceProvider extends ServiceProvider
+    {
+        public function register(): void
+        {
+            $this->app->bind(
+                TaskRepositoryInterface::class,
+                EloquentTaskRepository::class,
+            );
+        }
+
+        public function boot(): void
+        {
+            //
+        }
+    }
+    ```
+
+*   **`app/Exceptions/`**: Contains custom exception classes to handle business logic errors explicitly, allowing the Presentation Layer to catch them and return appropriate HTTP error codes.
+    *   **Example:**
+    ```php
+    // app/Exceptions/TaskNotFoundException.php
+    namespace App\Exceptions;
+
+    use Exception;
+
+    class TaskNotFoundException extends Exception
+    {
+        public function __construct(int $taskId)
+        {
+            parent::__construct("Task with ID {$taskId} not found.");
+        }
+
+        public function render(): \Illuminate\Http\JsonResponse
+        {
+            return response()->json([
+                'success' => false,
+                'message' => $this->getMessage(),
+            ], 404);
+        }
+    }
+    ```
+
+*   **`app/Core/`**: A place for reusable components that can be used across the entire application, such as `BaseRepository` classes or useful `traits`.
+    *   **Example:**
+    ```php
+    // app/Core/Traits/HasCreator.php
+    namespace App\Core\Traits;
+
+    trait HasCreator
+    {
+        public static function bootHasCreator(): void
+        {
+            static::creating(function ($model) {
+                $model->created_by = auth()->id();
+            });
+        }
+
+        public function creator()
+        {
+            return $this->belongsTo(User::class, 'created_by');
+        }
+    }
+    ```
+
+---
+
+### # Code Examples
+
+#### DTO (Data Transfer Object)
+
+```php
+// app/DTOs/CreateTaskDTO.php
+namespace App\DTOs;
+
+readonly class CreateTaskDTO
+{
+    public function __construct(
+        public string $title,
+        public ?string $description,
+        public int $userId,
+        public ?string $dueDate = null,
+    ) {}
+
+    public static function fromRequest($request): self
+    {
+        return new self(
+            title: $request->validated('title'),
+            description: $request->validated('description'),
+            userId: $request->user()->id,
+            dueDate: $request->validated('due_date'),
+        );
+    }
+}
+```
+
+#### Event & Listener Registration
+
+```php
+// app/Providers/EventServiceProvider.php
+namespace App\Providers;
+
+use App\Domain\Events\TaskCompleted;
+use App\Listeners\SendTaskCompletedNotification;
+use Illuminate\Foundation\Support\Providers\EventServiceProvider as ServiceProvider;
+
+class EventServiceProvider extends ServiceProvider
+{
+    protected $listen = [
+        TaskCompleted::class => [
+            SendTaskCompletedNotification::class,
+        ],
+    ];
+}
+```
+
+#### API Routes
+
+```php
+// routes/api.php
+use App\Http\Controllers\Api\TaskController;
+use Illuminate\Support\Facades\Route;
+
+Route::middleware('auth:api')->group(function () {
+    Route::get('/tasks', [TaskController::class, 'index']);
+    Route::post('/tasks', [TaskController::class, 'store']);
+    Route::get('/tasks/{id}', [TaskController::class, 'show']);
+    Route::put('/tasks/{id}', [TaskController::class, 'update']);
+    Route::post('/tasks/{id}/complete', [TaskController::class, 'complete']);
+    Route::delete('/tasks/{id}', [TaskController::class, 'destroy']);
+});
+```
+
+---
+
+### # Dependency Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    PRESENTATION LAYER                           │
+│  ┌─────────────┐    ┌──────────────┐    ┌──────────────────┐  │
+│  │ Controllers │───▶│   Requests   │───▶│    Resources     │  │
+│  └──────┬──────┘    └──────────────┘    └──────────────────┘  │
+└─────────┼───────────────────────────────────────────────────────┘
+          │ calls
+          ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    APPLICATION LAYER                            │
+│  ┌─────────────────────────────────────────────────────────────┐│
+│  │                      Services                               ││
+│  │  (Orchestrates use cases, depends on interfaces)           ││
+│  └──────────────────────────┬────────────────────────────────┘│
+└──────────────────────────────┼─────────────────────────────────┘
+                               │ depends on interfaces
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      DOMAIN LAYER                               │
+│  ┌──────────────────┐    ┌────────────────┐    ┌────────────┐ │
+│  │    Entities      │    │    Enums       │    │   Events   │ │
+│  └──────────────────┘    └────────────────┘    └────────────┘ │
+│  ┌─────────────────────────────────────────────────────────────┐│
+│  │              Repository Interfaces                          ││
+│  └──────────────────────────┬────────────────────────────────┘│
+└──────────────────────────────┼─────────────────────────────────┘
+                               │ implemented by
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                   INFRASTRUCTURE LAYER                          │
+│  ┌──────────────────────────────┐    ┌────────────────────────┐│
+│  │  Eloquent Repositories       │    │   External Services    ││
+│  └──────────────────────────────┘    └────────────────────────┘│
+│  ┌──────────────────────────────┐    ┌────────────────────────┐│
+│  │      Models (Eloquent)       │    │     Notifications      ││
+│  └──────────────────────────────┘    └────────────────────────┘│
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### # Key Principles
+
+1. **Dependency Inversion**: High-level modules should not depend on low-level modules. Both should depend on abstractions.
+
+2. **Single Responsibility**: Each class should have only one reason to change.
+
+3. **Separation of Concerns**: Keep business logic (Domain) separate from infrastructure (Database, APIs).
+
+4. **Testability**: Business logic in the Domain layer should be easily testable without depending on framework or database.
+
+5. **Explicit Dependencies**: Inject dependencies through constructors (Dependency Injection).

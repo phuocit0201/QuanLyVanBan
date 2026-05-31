@@ -1,0 +1,209 @@
+---
+alwaysApply: true
+description: Internationalization (i18n) and localization best practices
+globs: ["**/*.php"]
+---
+
+# Internationalization (i18n) Rules
+
+## Overview
+
+All user-facing messages must support both Vietnamese (vn) and English (en) languages. Default language is Vietnamese.
+
+## Language Files Structure
+
+```
+lang/
+├── vn/
+│   └── messages.php    # Vietnamese translations (default)
+└── en/
+    └── messages.php    # English translations
+```
+
+## Message Categories
+
+### 1. Authentication Messages
+```php
+'auth' => [
+    'registered' => '...',
+    'login_success' => '...',
+    'logout_success' => '...',
+    'token_refreshed' => '...',
+    'invalid_credentials' => '...',
+    'user_not_found' => '...',
+    'unauthorized' => '...',
+    'token_expired' => '...',
+    'token_invalid' => '...',
+],
+```
+
+### 2. Validation Messages
+```php
+'validation' => [
+    'name_required' => '...',
+    'name_max' => '...',
+    'email_required' => '...',
+    'email_invalid' => '...',
+    'email_unique' => '...',
+    'password_required' => '...',
+    'password_min' => '...',
+    'password_confirmed' => '...',
+],
+```
+
+### 3. General Messages
+```php
+'general' => [
+    'success' => '...',
+    'error' => '...',
+    'not_found' => '...',
+    'unauthorized' => '...',
+    'server_error' => '...',
+    'created' => '...',
+    'updated' => '...',
+    'deleted' => '...',
+],
+```
+
+### 4. Entity-Specific Messages
+```php
+'task' => [
+    'created' => '...',
+    'updated' => '...',
+    'deleted' => '...',
+    'completed' => '...',
+    'not_found' => '...',
+],
+```
+
+## Usage Rules
+
+### Always Use trans() for User-Facing Messages
+
+**Bad:**
+```php
+return response()->json([
+    'success' => true,
+    'message' => 'Đăng ký thành công', // ❌ Hardcoded
+]);
+```
+
+**Good:**
+```php
+return response()->json([
+    'success' => true,
+    'message' => trans('messages.auth.registered'), // ✅ i18n
+]);
+```
+
+### Use ApiResponse Helper
+
+**Example - AuthController:**
+```php
+use App\Helpers\ApiResponse;
+
+public function register(RegisterRequest $request): JsonResponse
+{
+    // ...
+
+    return ApiResponse::created(
+        data: ['user' => new UserResource($user)],
+        message: trans('messages.auth.registered'),
+    );
+}
+```
+
+### Use ApiResponse Static Methods
+
+```php
+ApiResponse::success($data, trans('messages.general.success'));
+ApiResponse::created($data, trans('messages.auth.registered'));
+ApiResponse::error(trans('messages.general.error'), 400);
+ApiResponse::notFound(trans('messages.auth.user_not_found'));
+ApiResponse::unauthorized(trans('messages.auth.unauthorized'));
+ApiResponse::validationError($errors);
+```
+
+## Locale Detection (Priority Order)
+
+1. **Query parameter**: `?lang=en` or `?lang=vn`
+2. **Accept-Language header**: `Accept-Language: en-US,en;q=0.9`
+3. **User preference**: `user.locale` (if authenticated)
+4. **Default**: Vietnamese (`vn`)
+
+## Form Request Validation Messages
+
+**Example:**
+```php
+class RegisterRequest extends FormRequest
+{
+    public function messages(): array
+    {
+        return [
+            'name.required' => trans('messages.validation.name_required'),
+            'name.max' => trans('messages.validation.name_max'),
+            'email.required' => trans('messages.validation.email_required'),
+            'email.email' => trans('messages.validation.email_invalid'),
+            'email.unique' => trans('messages.validation.email_unique'),
+            'password.required' => trans('messages.validation.password_required'),
+            'password.min' => trans('messages.validation.password_min'),
+            'password.confirmed' => trans('messages.validation.password_confirmed'),
+        ];
+    }
+}
+```
+
+## Exception Messages
+
+**Example - AuthenticationException:**
+```php
+public function render(): JsonResponse
+{
+    return ApiResponse::unauthorized(trans('messages.auth.invalid_credentials'));
+}
+```
+
+## Middleware Configuration
+
+**SetLocale Middleware** automatically sets the locale:
+```php
+// In bootstrap/app.php
+->withMiddleware(function (Middleware $middleware): void {
+    $middleware->api(prepend: [
+        SetLocale::class,
+    ]);
+})
+```
+
+## Placeholders
+
+Use placeholders for dynamic values:
+```php
+// In lang/vn/messages.php
+'welcome' => 'Chào mừng :name đến với :app',
+
+// Usage
+trans('messages.welcome', [
+    'name' => $user->name,
+    'app' => config('app.name'),
+]);
+```
+
+## Naming Conventions
+
+- Use **snake_case** for keys
+- Group related messages under **category keys** (auth, validation, general, entity name)
+- Keep messages **concise** (under 100 characters)
+- Make messages **contextual** - same meaning, different context = different keys
+
+**Examples:**
+```php
+// ✅ Good
+'messages.auth.registered'
+'messages.task.completed'
+'messages.task.assigned_to_you'
+
+// ❌ Bad
+'messages.success'
+'messages.completed'
+```

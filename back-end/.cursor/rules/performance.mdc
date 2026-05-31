@@ -1,0 +1,523 @@
+---
+alwaysApply: true
+description: Performance optimization guidelines
+globs: ["**/*.php"]
+---
+
+# Performance Optimization Rules
+
+## Database Query Optimization
+
+### N+1 Query Problem
+
+#### Always Use Eager Loading
+The N+1 query problem is one of the most common performance issues.
+
+**Bad - N+1 Queries:**
+```php
+$posts = Post::all();
+foreach ($posts as $post) {
+    echo $post->user->name; // Executes a query for each post!
+}
+// Total queries: 1 + N (where N = number of posts)
+```
+
+**Good - Eager Loading:**
+```php
+$posts = Post::with('user')->get();
+foreach ($posts as $post) {
+    echo $post->user->name; // No additional queries!
+}
+// Total queries: 2 (one for posts, one for users)
+```
+
+#### Multiple Relationships
+```php
+// Load multiple relationships at once
+$posts = Post::with(['user', 'comments', 'tags'])->get();
+
+// Nested relationships
+$posts = Post::with(['user', 'comments.user'])->get();
+
+// Conditional eager loading
+$posts = Post::with(['user' => function ($query) {
+    $query->select('id', 'name');
+}])->get();
+```
+
+### Always Use LIMIT in Queries
+
+#### Add Limits to Prevent Large Result Sets
+Always specify a limit when querying, especially for APIs:
+
+```php
+// Bad - No limit
+$users = User::where('active', true)->get(); // Could return millions!
+
+// Good - With limit
+$users = User::where('active', true)->limit(100)->get();
+
+// With pagination
+$users = User::where('active', true)
+    ->paginate(20); // Laravel's built-in pagination
+```
+
+#### Pagination Best Practices
+```php
+// Simple pagination for APIs
+public function index(Request $request): JsonResponse
+{
+    $perPage = min($request->integer('per_page', 15), 100);
+
+    $users = User::query()
+        ->when($request->filled('search'), function ($query) use ($request) {
+            $query->where('name', 'like', "%{$request->search}%");
+        })
+        ->paginate($perPage);
+
+    return UserResource::collection($users);
+}
+```
+
+### Database Indexing
+
+#### Add Indexes for Frequently Queried Columns
+```php
+Schema::table('posts', function (Blueprint $table) {
+    // Single column index
+    $table->index('status');
+    $table->index('published_at');
+
+    // Composite index
+    $table->index(['user_id', 'status']);
+
+    // Unique index
+    $table->unique('slug');
+});
+```
+
+#### When to Add Indexes
+- Columns in WHERE clauses
+- Foreign key columns
+- Columns in ORDER BY clauses
+- Columns in JOIN conditions
+- Columns in GROUP BY clauses
+- Columns frequently used in LIKE patterns
+
+### Query Optimization
+
+#### Select Only Needed Columns
+```php
+// Bad - Selects all columns
+$users = User::all();
+
+// Good - Select only what you need
+$users = User::select('id', 'name', 'email')->get();
+
+// With relationship
+$posts = Post::with('user:id,name')
+    ->select('id', 'title', 'user_id')
+    ->get();
+```
+
+#### Use Chunk for Large Datasets
+```php
+// Process large datasets in chunks to avoid memory issues
+User::chunk(100, function ($users) {
+    foreach ($users as $user) {
+        // Process user
+    }
+});
+
+// Or use lazy loading
+User::lazy()->each(function ($user) {
+    // Process user
+});
+
+// Chunk by ID for consistent ordering
+User::chunkById(100, function ($users) {
+    foreach ($users as $user) {
+        // Process user
+    }
+});
+```
+
+#### Use Query Scopes
+```php
+class Post extends Model
+{
+    public function scopePublished($query)
+    {
+        return $query->where('status', 'published');
+    }
+
+    public function scopeRecent($query, $days = 7)
+    {
+        return $query->where('created_at', '>=', now()->subDays($days));
+    }
+
+    public function scopeForUser($query, int $userId)
+    {
+        return $query->where('user_id', $userId);
+    }
+}
+
+// Usage
+$posts = Post::published()->recent()->forUser($userId)->get();
+```
+
+### Database Transactions
+
+#### Use Transactions for Related Operations
+Wrap multiple related database operations in transactions:
+
+```php
+use Illuminate\Support\Facades\DB;
+
+// Basic transaction
+DB::transaction(function () {
+    $order = Order::create([...]);
+    OrderItem::create([...]);
+    $user->decrement('balance', $amount);
+});
+
+// With lock for critical operations
+DB::transaction(function () use ($account, $amount) {
+    $account->lockForUpdate()->first();
+    $account->balance -= $amount;
+    $account->save();
+});
+```
+
+#### Transaction Best Practices
+```php
+// For critical operations, use explicit transaction with try-catch
+public function transferMoney(Account $from, Account $to, float $amount): bool
+{
+    try {
+        DB::transaction(function () use ($from, $to, $amount) {
+            $from->lockForUpdate();
+            $to->lockForUpdate();
+
+            if ($from->balance < $amount) {
+                throw new InsufficientFundsException('Insufficient funds');
+            }
+
+            $from->decrement('balance', $amount);
+            $to->increment('balance', $amount);
+        });
+
+        return true;
+    } catch (InsufficientFundsException $e) {
+        Log::warning('Transfer failed', [
+            'from' => $from->id,
+            'to' => $to->id,
+            'reason' => $e->getMessage(),
+        ]);
+        return false;
+    }
+}
+```
+
+## Caching
+
+### Cache Expensive Operations
+
+#### Use Laravel's Cache
+```php
+use Illuminate\Support\Facades\Cache;
+
+// Cache for a specific time
+$users = Cache::remember('active-users', 60, function () {
+    return User::where('active', true)->get();
+});
+
+// Cache forever
+$settings = Cache::rememberForever('site-settings', function () {
+    return Setting::all();
+});
+
+// Invalidate cache
+Cache::forget('active-users');
+```
+
+#### Cache Database Queries
+```php
+// Cache query results
+$posts = Cache::tags(['posts'])->remember('posts.all', 3600, function () {
+    return Post::with('user')->published()->get();
+});
+
+// Clear tagged cache
+Cache::tags(['posts'])->flush();
+```
+
+#### Cache API Responses
+```php
+public function index()
+{
+    return Cache::remember('api.posts', 300, function () {
+        $posts = Post::with('user')->published()->get();
+        return PostResource::collection($posts);
+    });
+}
+```
+
+### Cache Busting
+```php
+// Invalidate cache when data changes
+class Post extends Model
+{
+    protected static function booted()
+    {
+        static::saved(function () {
+            Cache::tags(['posts'])->flush();
+        });
+
+        static::deleted(function () {
+            Cache::tags(['posts'])->flush();
+        });
+    }
+}
+```
+
+### Cache Invalidation Patterns
+```php
+// For user-specific cache
+$cacheKey = "user.{$userId}.profile";
+Cache::put($cacheKey, $profile, 3600);
+
+// When user updates profile
+Cache::forget("user.{$userId}.profile");
+
+// Use cache versioning for complex invalidation
+$version = Cache::get('posts.cache.version', 1);
+$posts = Cache::remember("posts.v{$version}", 3600, fn() => Post::all());
+```
+
+## Queue Jobs
+
+### Use Queues for Time-Consuming Tasks
+
+#### What to Queue
+- Sending emails
+- Processing large files
+- External API calls
+- Image processing
+- Report generation
+- Data imports/exports
+- Complex calculations
+
+**Example:**
+```php
+use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Foundation\Bus\Dispatchable;
+use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Queue\SerializesModels;
+
+class SendWelcomeEmail implements ShouldQueue
+{
+    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+
+    public int $tries = 3;
+    public int $timeout = 120;
+
+    public function __construct(
+        public User $user
+    ) {}
+
+    public function handle(): void
+    {
+        // Send email
+        Mail::to($this->user)->send(new WelcomeEmail($this->user));
+    }
+
+    public function failed(\Throwable $exception): void
+    {
+        Log::error('Failed to send welcome email', [
+            'user_id' => $this->user->id,
+            'error' => $exception->getMessage(),
+        ]);
+    }
+}
+
+// Dispatch the job
+SendWelcomeEmail::dispatch($user);
+
+// Dispatch to specific queue
+SendWelcomeEmail::dispatch($user)->onQueue('emails');
+```
+
+### Queue Best Practices
+```php
+// For long-running jobs, extend timeout
+class ProcessVideoJob implements ShouldQueue
+{
+    public int $timeout = 3600; // 1 hour
+    public int $tries = 1; // Don't retry video processing
+}
+
+// For jobs that should retry
+class ProcessImportJob implements ShouldQueue
+{
+    public int $tries = 3;
+    public int $backoff = 60; // Wait 60 seconds before retry
+}
+```
+
+## Optimize Eloquent
+
+### Use exists() Instead of count()
+```php
+// Bad - Loads and counts all records
+if (Post::where('user_id', $userId)->count() > 0) {
+    // ...
+}
+
+// Good - Only checks existence
+if (Post::where('user_id', $userId)->exists()) {
+    // ...
+}
+```
+
+### Use first() Instead of get() When You Need Only One
+```php
+// Bad - Gets collection
+$user = User::where('email', $email)->get()->first();
+
+// Good - Gets single model directly
+$user = User::where('email', $email)->first();
+```
+
+### Use cursor() for Large Datasets
+```php
+// Bad - Loads all into memory
+foreach (User::all() as $user) {
+    // Process
+}
+
+// Good - Uses cursor (streaming)
+foreach (User::cursor() as $user) {
+    // Process
+}
+```
+
+### Avoid Loading Unnecessary Relationships
+```php
+// Bad - Loads all relationships
+$user = User::with('posts', 'comments', 'likes')->find($id);
+echo $user->name; // Only needed the name!
+
+// Good - Load only what you need
+$user = User::select('id', 'name')->find($id);
+```
+
+### Use find() with Multiple IDs for Multiple Queries
+```php
+// Bad - Multiple queries
+$users = [];
+foreach ($ids as $id) {
+    $users[] = User::find($id);
+}
+
+// Good - Single query
+$users = User::find($ids);
+```
+
+## Asset Optimization
+
+### Compile and Minify Assets
+```bash
+# Production build
+npm run build
+
+# This will:
+# - Minify JavaScript
+# - Minify CSS
+# - Optimize images
+# - Remove unused CSS
+```
+
+### Use CDN for Static Assets
+- Serve static files from CDN
+- Use asset versioning for cache busting
+- Optimize images before uploading
+
+## Configuration Caching
+
+### Cache Configuration in Production
+```bash
+# Cache config
+php artisan config:cache
+
+# Cache routes
+php artisan route:cache
+
+# Cache views
+php artisan view:cache
+
+# Optimize autoloader
+composer dump-autoload --optimize
+```
+
+**Important:** Clear cache after deployment:
+```bash
+php artisan optimize:clear
+```
+
+## Monitoring & Profiling
+
+### Use Laravel Telescope/Debugbar
+- Monitor slow queries
+- Track N+1 queries
+- Profile application performance
+- Monitor cache hit/miss ratio
+
+### Log Slow Queries
+```php
+// In AppServiceProvider
+DB::listen(function ($query) {
+    if ($query->time > 100) { // Log queries over 100ms
+        Log::warning('Slow query detected', [
+            'sql' => $query->sql,
+            'bindings' => $query->bindings,
+            'time' => $query->time,
+        ]);
+    }
+});
+```
+
+### Use Application Profiling
+```php
+// In your code
+use Illuminate\Support\Facades\DB;
+
+$start = microtime(true);
+// Your code here
+$duration = microtime(true) - $start;
+
+if ($duration > 1.0) {
+    Log::info('Slow operation', [
+        'operation' => 'heavy_calculation',
+        'duration' => $duration,
+    ]);
+}
+```
+
+## General Performance Tips
+
+1. **Use Pagination** - Don't load all records at once
+2. **Implement Caching** - Cache expensive operations
+3. **Optimize Images** - Compress and resize images
+4. **Use CDN** - Serve static assets from CDN
+5. **Enable OPcache** - PHP opcode caching
+6. **Use Redis** - For cache and sessions
+7. **Lazy Load Images** - Load images as needed
+8. **Minimize HTTP Requests** - Combine assets
+9. **Use HTTP/2** - Better performance than HTTP/1.1
+10. **Monitor Performance** - Regular performance audits
+11. **Use Database Transactions** - For related operations
+12. **Always Set Limits** - Prevent unbounded queries
+13. **Use find() over where()->first()** - When querying by ID
+14. **Use exists() over count()** - When checking existence

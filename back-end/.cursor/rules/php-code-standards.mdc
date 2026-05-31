@@ -1,0 +1,483 @@
+---
+alwaysApply: true
+description: PHP coding standards and best practices
+globs: ["**/*.php"]
+---
+
+# PHP Code Standards
+
+## PSR-12 Coding Standards
+
+Follow PSR-12 coding standards strictly for all PHP code.
+
+## Strict Types
+
+- Always use strict types at the top of PHP files:
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Http\Controllers;
+```
+
+## Type Hints
+
+- Use type hints for all parameters
+- Use return type declarations for all methods
+- Use nullable types when appropriate (`?string`, `?int`)
+- Use union types when needed (PHP 8.0+)
+
+**Example:**
+```php
+public function createUser(string $name, ?string $email = null): User
+{
+    // ...
+}
+```
+
+## PHP 8.x Features
+
+### Attributes (PHP 8.0+)
+Use attributes instead of PHPDoc annotations where applicable:
+
+```php
+#[Route('/users', methods: ['GET'])]
+public function index(): JsonResponse
+{
+    // ...
+}
+
+#[OA\Get(operationId: 'getUsers')]
+#[OA\Response(response: 200, description: 'List of users')]
+public function index(): JsonResponse
+{
+    // ...
+}
+```
+
+### Constructor Property Promotion (PHP 8.0+)
+```php
+// Instead of this:
+class UserService
+{
+    private UserRepository $userRepository;
+    private Mailer $mailer;
+
+    public function __construct(UserRepository $userRepository, Mailer $mailer)
+    {
+        $this->userRepository = $userRepository;
+        $this->mailer = $mailer;
+    }
+}
+
+// Do this:
+class UserService
+{
+    public function __construct(
+        private readonly UserRepository $userRepository,
+        private readonly Mailer $mailer,
+    ) {}
+}
+```
+
+### Match Expression (PHP 8.0+)
+```php
+// Instead of switch:
+switch ($status) {
+    case 'active':
+        $label = 'Active';
+        break;
+    case 'inactive':
+        $label = 'Inactive';
+        break;
+}
+
+// Use match:
+$label = match ($status) {
+    'active' => 'Active',
+    'inactive' => 'Inactive',
+    default => 'Unknown',
+};
+```
+
+### Enums (PHP 8.1+)
+```php
+enum OrderStatus: string
+{
+    case PENDING = 'pending';
+    case PROCESSING = 'processing';
+    case COMPLETED = 'completed';
+    case CANCELLED = 'cancelled';
+
+    public function label(): string
+    {
+        return match ($this) {
+            self::PENDING => 'Chờ xử lý',
+            self::PROCESSING => 'Đang xử lý',
+            self::COMPLETED => 'Hoàn thành',
+            self::CANCELLED => 'Đã hủy',
+        };
+    }
+}
+
+// Usage
+$status = OrderStatus::PENDING;
+echo $status->value; // 'pending'
+echo $status->label(); // 'Chờ xử lý'
+```
+
+### Fibers (PHP 8.1+)
+Not commonly used but good to know for async operations.
+
+### Readonly Properties (PHP 8.1+)
+```php
+class UserDTO
+{
+    public function __construct(
+        public readonly string $name,
+        public readonly string $email,
+        public readonly ?string $phone = null,
+    ) {}
+}
+```
+
+### First-Class Callable Syntax (PHP 8.1+)
+```php
+// Instead of this:
+$func = Closure::fromCallable([$controller, 'method']);
+$func = [$controller, 'method'](...);
+
+// Use this:
+$func = $controller->method(...);
+```
+
+### Disjunctive Normal Form Type Normalization (PHP 8.2+)
+```php
+// Complex union types should be organized for readability
+function foo((A&B)|C $arg): (D&F)|(E&F) {}
+```
+
+### Constants in Traits (PHP 8.2+)
+```php
+trait DatabaseConnection
+{
+    public const DEFAULT_TIMEOUT = 30;
+    public const DEFAULT_RETRY_COUNT = 3;
+}
+```
+
+### Typed Class Constants (PHP 8.3+)
+```php
+enum Status: string
+{
+    case DRAFT = 'draft';
+    case PUBLISHED = 'published';
+
+    public const DEFAULT = self::DRAFT;
+}
+```
+
+## Naming Conventions
+
+- Use meaningful variable names
+- Use descriptive method names
+- Write self-documenting code
+- Avoid abbreviations unless widely known
+- Use PascalCase for class names
+- Use camelCase for variables, methods, and function names
+- Use SCREAMING_SNAKE_CASE for constants
+
+**Good:**
+```php
+$userRepository = new UserRepository();
+$activeUsers = $userRepository->findActiveUsers();
+const MAX_RETRY_ATTEMPTS = 3;
+```
+
+**Bad:**
+```php
+$ur = new UserRepository();
+$au = $ur->findAU();
+const MAX = 3;
+```
+
+**Naming Conventions Table:**
+| Type | Convention | Example |
+|------|------------|---------|
+| Class | PascalCase | `UserController` |
+| Method | camelCase | `getUserById()` |
+| Variable | camelCase | `$userName` |
+| Constant | SCREAMING_SNAKE_CASE | `MAX_RETRY` |
+| Trait | PascalCase | `HandlesAuthorization` |
+| Interface | PascalCase (with `Interface` suffix optional) | `UserRepositoryInterface` |
+| Enum | PascalCase | `OrderStatus` |
+| Enum Case | PascalCase | `OrderStatus::PENDING` |
+
+## Comments & Documentation
+
+- Write clear, concise comments for complex logic only
+- Use PHPDoc blocks for all classes and public methods
+- Document parameters, return types, and exceptions
+- Keep comments up to date with code changes
+- Prefer self-documenting code over comments
+
+**Example:**
+```php
+/**
+ * Create a new user in the system.
+ *
+ * @param  string  $name  The user's full name
+ * @param  string  $email  The user's email address
+ * @return User  The created user instance
+ * @throws \InvalidArgumentException  If email is invalid
+ */
+public function createUser(string $name, string $email): User
+{
+    // Implementation
+}
+```
+
+**Better - Self-documenting code:**
+```php
+public function createUser(string $name, string $email): User
+{
+    $this->validateEmail($email);
+
+    return User::create([
+        'name' => $name,
+        'email' => $email,
+    ]);
+}
+```
+
+## Error Handling
+
+### Use Exceptions Properly
+```php
+// Custom Exception
+class UserNotFoundException extends Exception
+{
+    protected $message = 'User not found';
+    protected $code = 404;
+}
+
+// Throw with context
+throw new UserNotFoundException("User with ID {$id} does not exist");
+```
+
+### Laravel Exception Handling
+```php
+// app/Exceptions/Handler.php
+public function register(): void
+{
+    $this->reportable(function (Throwable $e) {
+        // Log to external service
+    });
+
+    $this->renderable(function (UserNotFoundException $e) {
+        return response()->json([
+            'success' => false,
+            'message' => $e->getMessage(),
+        ], 404);
+    });
+}
+```
+
+### Try-Catch Best Practices
+```php
+// Do catch specific exceptions
+try {
+    $user = $this->userRepository->findByEmail($email);
+} catch (UserNotFoundException $e) {
+    Log::warning('Login attempt for non-existent user', ['email' => $email]);
+    throw $e;
+}
+
+// Don't catch generic Exception
+try {
+    // code
+} catch (Exception $e) { // Never do this!
+    // Too broad, masks real issues
+}
+```
+
+### Result Pattern (Optional but Recommended)
+```php
+// For operations that can fail
+readonly class Result
+{
+    public function __construct(
+        public bool $success,
+        public mixed $data = null,
+        public ?string $error = null,
+    ) {}
+
+    public static function ok(mixed $data): self
+    {
+        return new self(true, $data);
+    }
+
+    public static function fail(string $error): self
+    {
+        return new self(false, null, $error);
+    }
+}
+
+// Usage
+$result = $this->userService->createUser($data);
+if (!$result->success) {
+    return response()->json(['error' => $result->error], 400);
+}
+return $result->data;
+```
+
+## Code Quality Principles
+
+- Follow SOLID principles (Single Responsibility, Open/Closed, Liskov Substitution, Interface Segregation, Dependency Inversion)
+- Keep methods small and focused (Single Responsibility)
+- Write DRY code (Don't Repeat Yourself)
+- Prefer composition over inheritance
+- Use meaningful abstractions
+- Keep dependencies minimal
+
+### SOLID Principles Quick Reference
+
+**Single Responsibility Principle (SRP)**
+```php
+// Bad - UserService does too much
+class UserService
+{
+    public function createUser($data) { /* create */ }
+    public function sendWelcomeEmail($user) { /* send */ }
+    public function logUserCreation($user) { /* log */ }
+}
+
+// Good - Separate concerns
+class UserService { public function createUser($data) { /* create */ } }
+class WelcomeEmailService { public function send($user) { /* send */ } }
+class AuditLogService { public function log($action, $data) { /* log */ } }
+```
+
+**Dependency Injection**
+```php
+// Bad - Hard dependency
+class UserService
+{
+    private UserRepository $repository;
+
+    public function __construct()
+    {
+        $this->repository = new UserRepository(); // Don't do this!
+    }
+}
+
+// Good - Inject dependencies
+class UserService
+{
+    public function __construct(
+        private UserRepositoryInterface $repository,
+    ) {}
+}
+```
+
+## Class Structure Order
+
+Organize class members in this order:
+1. Traits
+2. Constants
+3. Properties (public, then protected, then private)
+4. Constructor
+5. Public methods
+6. Protected methods
+7. Private methods
+
+```php
+class UserController
+{
+    use AuthorizesRequests, ValidatesRequests;
+
+    private const MAX_ITEMS_PER_PAGE = 20;
+
+    public function __construct(
+        private readonly UserService $userService,
+    ) {}
+
+    public function index(Request $request): JsonResponse { /* ... */ }
+    public function show(int $id): JsonResponse { /* ... */ }
+
+    private function validatePagination(Request $request): array { /* ... */ }
+}
+```
+
+## Control Structures
+
+### Prefer early returns (guard clauses)
+```php
+// Bad
+public function update(Request $request, User $user): JsonResponse
+{
+    if ($request->has('name')) {
+        if (strlen($request->name) > 0) {
+            $user->name = $request->name;
+            if ($user->save()) {
+                return response()->json(['success' => true]);
+            }
+        }
+    }
+    return response()->json(['success' => false], 400);
+}
+
+// Good - Early returns
+public function update(Request $request, User $user): JsonResponse
+{
+    if (!$request->has('name') || strlen($request->name) === 0) {
+        return response()->json(['success' => false], 400);
+    }
+
+    $user->name = $request->name;
+    $user->save();
+
+    return response()->json(['success' => true]);
+}
+```
+
+### Use nullsafe operator (PHP 8.0+)
+```php
+// Instead of
+$length = $user !== null && $user->profile !== null
+    ? $user->profile->getNameLength()
+    : null;
+
+// Use
+$length = $user?->profile?->getNameLength();
+```
+
+### Use match expression (PHP 8.0+)
+See PHP 8.x Features section.
+
+## Boolean Evaluation
+
+### Explicit comparisons
+```php
+// Bad
+if ($isActive) { /* ... */ }
+if (!$user) { /* ... */ }
+
+// Good
+if ($isActive === true) { /* ... */ }
+if ($isActive === false) { /* ... */ }
+if ($user === null) { /* ... */ }
+if ($user !== null) { /* ... */ }
+```
+
+### Check array key existence
+```php
+// Instead of
+if ($data['key']) { /* may fail if value is falsy */ }
+
+// Use
+if (isset($data['key'])) { /* ... */ }
+if (array_key_exists('key', $data)) { /* ... */ }
+```
+
