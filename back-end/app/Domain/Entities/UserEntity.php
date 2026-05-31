@@ -14,6 +14,7 @@ use Tymon\JWTAuth\Contracts\JWTSubject;
  */
 class UserEntity extends User implements JWTSubject
 {
+    protected $table = 'users';
     public function getJWTIdentifier(): mixed
     {
         return $this->getKey();

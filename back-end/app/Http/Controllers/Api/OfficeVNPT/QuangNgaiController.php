@@ -5,54 +5,41 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\OfficeVNPT;
 
 use App\Http\Controllers\Controller;
-use App\Http\Requests\OfficeVNPT\QuangNgaiLoginRequest;
 use App\Services\OfficeVNPT\QuangNgaiService;
+use App\Services\VnptCredentialService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 /**
  * Controller for Quang Ngai Office external API integration.
+ * Credentials are stored in DB per user, no longer passed from client.
  */
 class QuangNgaiController extends Controller
 {
     public function __construct(
         private readonly QuangNgaiService $quangNgaiService,
+        private readonly VnptCredentialService $vnptCredentialService,
     ) {}
 
-    public function login(QuangNgaiLoginRequest $request): JsonResponse
-    {
-        $credentials = $request->validated();
-
-        $result = $this->quangNgaiService->login($credentials);
-
-        if (isset($result['success']) && $result['success'] === false) {
-            return response()->json([
-                'success' => false,
-                'message' => $result['error'] ?? trans('messages.auth.login_failed'),
-            ], $result['status_code'] ?? 401);
-        }
-
-        return response()->json([
-            'success' => true,
-            'message' => trans('messages.auth.login_success'),
-            'data' => $result,
-        ]);
-    }
-
     /**
-     * Get document list with auto-relogin on 401.
+     * Get document list. Credentials are fetched from DB.
      */
     public function getDocumentList(Request $request): JsonResponse
     {
+        $user = $request->user();
+        $credentials = $this->vnptCredentialService->getByUser($user->id);
+
+        if ($credentials === null) {
+            return response()->json([
+                'success' => false,
+                'message' => trans('messages.vnpt.not_configured'),
+            ], 400);
+        }
+
         $param = $request->input('param') ?? '';
         $pageNo = (int) ($request->input('pageNo') ?? 1);
         $pageRec = (int) ($request->input('pageRec') ?? 10);
         $kho = $request->input('kho') ?? 'Tra cứu văn bản';
-
-        $credentials = [
-            'username' => $request->input('credentials.username'),
-            'password' => $request->input('credentials.password'),
-        ];
 
         $result = $this->quangNgaiService->getDocumentList(
             param: (string) $param,
@@ -78,19 +65,24 @@ class QuangNgaiController extends Controller
 
     /**
      * Fetch documents from API and save to database.
+     * Credentials are fetched from DB.
      */
     public function syncDocuments(Request $request): JsonResponse
     {
+        $user = $request->user();
+        $credentials = $this->vnptCredentialService->getByUser($user->id);
+
+        if ($credentials === null) {
+            return response()->json([
+                'success' => false,
+                'message' => trans('messages.vnpt.not_configured'),
+            ], 400);
+        }
+
         $param = $request->input('param') ?? '';
         $pageNo = (int) ($request->input('pageNo') ?? 1);
         $pageRec = (int) ($request->input('pageRec') ?? 10);
         $kho = $request->input('kho') ?? 'Tra cứu văn bản';
-        $userId = $request->input('user_id');
-
-        $credentials = [
-            'username' => $request->input('credentials.username'),
-            'password' => $request->input('credentials.password'),
-        ];
 
         $result = $this->quangNgaiService->fetchAndSaveDocuments(
             param: (string) $param,
@@ -98,7 +90,7 @@ class QuangNgaiController extends Controller
             pageRec: $pageRec,
             kho: (string) $kho,
             credentials: $credentials,
-            userId: $userId !== null ? (int) $userId : null,
+            userId: $user->id,
         );
 
         if (isset($result['success']) && $result['success'] === false) {

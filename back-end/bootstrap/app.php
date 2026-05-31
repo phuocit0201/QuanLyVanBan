@@ -1,8 +1,9 @@
 <?php
 
-use App\Exceptions\AuthenticationException;
+use App\Exceptions\AuthenticationException as AppAuthenticationException;
 use App\Exceptions\UserNotFoundException;
 use App\Http\Middleware\SetLocale;
+use Illuminate\Auth\AuthenticationException;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -25,6 +26,7 @@ return Application::configure(basePath: dirname(__DIR__))
 
         $middleware->alias([
             'locale' => SetLocale::class,
+            'auth' => \App\Http\Middleware\Authenticate::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
@@ -51,7 +53,7 @@ return Application::configure(basePath: dirname(__DIR__))
         });
 
         // Custom Exceptions
-        $exceptions->render(function (AuthenticationException $e) {
+        $exceptions->render(function (AppAuthenticationException $e) {
             return $e->render();
         });
 

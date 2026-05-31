@@ -77,4 +77,15 @@ return [
         'connection_error' => 'Connection error',
         'request_failed' => 'Request failed with status :status',
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | VNPT Credential Messages
+    |--------------------------------------------------------------------------
+    */
+    'vnpt' => [
+        'credential_saved' => 'VNPT credentials saved',
+        'credential_deleted' => 'VNPT credentials deleted',
+        'not_configured' => 'VNPT account not configured',
+    ],
 ];

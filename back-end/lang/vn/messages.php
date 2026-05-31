@@ -77,4 +77,15 @@ return [
         'connection_error' => 'Lỗi kết nối',
         'request_failed' => 'Yêu cầu thất bại với mã :status',
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | VNPT Credential Messages
+    |--------------------------------------------------------------------------
+    */
+    'vnpt' => [
+        'credential_saved' => 'Đã lưu thông tin đăng nhập VNPT',
+        'credential_deleted' => 'Đã xóa thông tin đăng nhập VNPT',
+        'not_configured' => 'Chưa cấu hình tài khoản VNPT',
+    ],
 ];

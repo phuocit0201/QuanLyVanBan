@@ -1,0 +1,37 @@
+---
+alwaysApply: true
+---
+
+# Development Workflow Rule
+
+## Rule
+
+Whenever the user submits a coding task, you **MUST** follow the 6-phase workflow defined in the `fullstack-workflow-skill.md` skill:
+
+1. **PLAN** — Understand, explore, and create a structured plan. Ask clarifying questions if the request is ambiguous.
+2. **CODE** — Implement following project conventions. Always read before editing. Use dedicated file tools (not terminal) for file operations.
+3. **REVIEW** — Self-review every file. Check correctness, completeness, type safety, error handling, security, and accessibility.
+4. **FIX** — Resolve all issues found during review. Run linters (`ReadLints`) and build commands (`npm run build`, `tsc --noEmit`) to verify.
+5. **TEST** — Start dev servers if needed. Use Playwright MCP tools (browser_navigate, browser_fill, browser_click, browser_screenshot, browser_console_logs) to perform automated browser testing. Take screenshots to verify UI state.
+6. **ITERATE** — When the user reports a bug, fix it, verify with build + Playwright MCP browser test. Repeat until stable.
+
+## When to Pause and Ask
+
+Stop and ask the user before proceeding if:
+- The request is ambiguous or lacks key details
+- There are multiple valid approaches with trade-offs
+- The task might break existing functionality
+- A large refactoring is needed (3+ files affected)
+- You need clarification on business logic
+
+## Mandatory Verification Steps
+
+- **Never write code without reading existing code first** in that file
+- **Always run a build/lint check** before declaring a task complete
+- **Always use Playwright MCP tools** to verify UI in the browser during the TEST phase — navigate, fill, click, screenshot, console logs.
+- **Never skip the Review phase** — always self-check before calling it done
+- **Mark todos as completed only after verified** — not just after writing the code
+
+## Important
+
+This rule is **always active**. The `fullstack-workflow-skill.md` skill contains the detailed phase instructions. Together, this rule + skill form the complete workflow protocol.
